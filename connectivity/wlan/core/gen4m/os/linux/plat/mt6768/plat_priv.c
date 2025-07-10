@@ -35,6 +35,7 @@ uint32_t kalGetCpuBoostThreshold(void)
 
 void kalSetCpuFreq(int32_t freq, uint32_t set_mask)
 {
+#if CFG_SUPPORT_CPU_BOOST
 	int cpu, ret;
 	struct cpufreq_policy *policy;
 	struct wlan_policy *wReq;
@@ -76,12 +77,14 @@ void kalSetCpuFreq(int32_t freq, uint32_t set_mask)
 				wReq->cpu, freq, ret);
 		}
 	}
+#endif
 }
 
 int32_t kalBoostCpu(struct ADAPTER *prAdapter,
 		    uint32_t u4TarPerfLevel,
 		    uint32_t u4BoostCpuTh)
 {
+#if CFG_SUPPORT_CPU_BOOST
 	int32_t i4Freq = -1;
 #ifdef WLAN_FORCE_DDR_OPP
 	static struct pm_qos_request wifi_qos_request;
@@ -108,6 +111,9 @@ int32_t kalBoostCpu(struct ADAPTER *prAdapter,
 	}
 #endif
 	return 0;
+#else
+	return -1;
+#endif /* CFG_SUPPORT_CPU_BOOST */
 }
 
 #ifdef CONFIG_WLAN_MTK_EMI
