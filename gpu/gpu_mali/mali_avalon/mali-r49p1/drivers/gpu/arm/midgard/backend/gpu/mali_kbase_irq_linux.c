@@ -168,7 +168,7 @@ static irqreturn_t kbase_gpu_irq_handler(int irq, void *data)
 			trace_gpu_frequency(cur_gpufreq, 0);
 		}
 	}
-#endif /* CONFIG_MALI_MTK_GPU_FREQUENCY_TRACE*/
+#endif /* CONFIG_MALI_MTK_GPU_FREQUENCY_TRACE */
 
 	return irq_state;
 }

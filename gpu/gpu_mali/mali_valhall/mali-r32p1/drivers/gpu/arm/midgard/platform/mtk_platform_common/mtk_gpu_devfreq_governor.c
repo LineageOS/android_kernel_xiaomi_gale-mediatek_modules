@@ -95,8 +95,8 @@ static int mtk_common_devfreq_target(struct device *dev,
 
 	gpufreq_set_limit(TARGET_DEFAULT, LIMIT_THERMAL_AP, freq_khz, GPUPPM_KEEP_IDX);
 
-//	kbdev->current_nominal_freq =
-//		gpufreq_get_cur_freq(TARGET_DEFAULT) * 1000; /* khz to hz*/
+	kbdev->current_nominal_freq =
+		gpufreq_get_cur_freq(TARGET_DEFAULT) * 1000; /* khz to hz*/
 #else
 	opp_idx = mt_gpufreq_get_opp_idx_by_freq(freq_khz);
 	if (opp_idx) {
@@ -115,14 +115,6 @@ static int mtk_common_devfreq_target(struct device *dev,
 #endif /* CONFIG_MTK_GPUFREQ_V2 */
 
 	return 0;
-}
-
-static void mtk_common_devfreq_set_cur_freq(unsigned long cur_freq){
-	struct kbase_device *kbdev;
-	kbdev = (struct kbase_device *)mtk_common_get_kbdev();
-	if (!kbdev)
-		return;
-	kbdev->current_nominal_freq = cur_freq * 1000;
 }
 
 static int mtk_common_devfreq_get_cur_freq(struct device *dev, unsigned long *freq)
@@ -151,7 +143,6 @@ void mtk_common_devfreq_update_profile(struct devfreq_dev_profile *dp)
 	dp->get_dev_status = mtk_common_devfreq_status;
 	dp->get_cur_freq = mtk_common_devfreq_get_cur_freq;
 	dp->exit = NULL;
-	mtk_devfreq_set_cur_freq_fp = mtk_common_devfreq_set_cur_freq;
 }
 
 int mtk_common_devfreq_init(void)

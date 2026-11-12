@@ -1120,7 +1120,6 @@ PVRSRV_ERROR PVRSRVAllocSubHandleUnlocked(PVRSRV_HANDLE_BASE *psBase,
 	/* If we were able to allocate the handle then there should be no reason why we
 	 * can't also get it's handle structure. Otherwise something has gone badly wrong.
 	 */
-	PVR_ASSERT(eError == PVRSRV_OK);
 	PVR_LOG_GOTO_IF_FALSE(eError == PVRSRV_OK, "Failed to get parent handle structure",
 	                  ExitFreeHandle);
 
@@ -1411,8 +1410,6 @@ void PVRSRVReleaseHandleUnlocked(PVRSRV_HANDLE_BASE *psBase,
 		        "for base %p of type %s.", __func__, PVRSRVGetErrorString(eError),
 		        (void*) hHandle, HandleTypeToString(eType), psBase,
 		        HandleBaseTypeToString(psBase->eType)));
-
-		PVR_ASSERT(eError == PVRSRV_OK);
 
 		return;
 	}
@@ -2113,6 +2110,8 @@ ExitUnlock:
 	return eError;
 }
 
+/* Only called from sync_fallback_server.c */
+#if defined(SUPPORT_FALLBACK_FENCE_SYNC)
 /*!
 *******************************************************************************
  @Function      PVRSRVRetrieveProcessHandleBase
@@ -2152,8 +2151,13 @@ PVRSRV_HANDLE_BASE *PVRSRVRetrieveProcessHandleBase(void)
 		/* Not being called from the cleanup thread, so return the process
 		 * handle base for the current process.
 		 */
+		uintptr_t uiHashKey;
+
+		uiHashKey = OSAcquireCurrentPPIDResourceRefKM();
+		OSReleasePPIDResourceRefKM(uiHashKey);
+
 		psProcHandleBase = (PROCESS_HANDLE_BASE *)
-		    HASH_Retrieve(g_psProcessHandleBaseTable, OSGetCurrentClientProcessIDKM());
+		    HASH_Retrieve(g_psProcessHandleBaseTable, uiHashKey);
 	}
 
 	OSLockRelease(g_hProcessHandleBaseLock);
@@ -2164,26 +2168,30 @@ PVRSRV_HANDLE_BASE *PVRSRVRetrieveProcessHandleBase(void)
 	}
 	return psHandleBase;
 }
+#endif
 
 /*!
 *******************************************************************************
  @Function      PVRSRVAcquireProcessHandleBase
- @Description   Increments reference count on a process handle base identified
-                by uiPid and returns pointer to the base. If the handle base
-                does not exist it will be allocated.
- @Inout         uiPid - PID of a process
- @Output        ppsBase - pointer to a handle base for the process identified by
-                          uiPid
+ @Description   Increments reference count on the process handle base for the
+                current process and returns pointer to the base. If the handle
+                base does not exist it will be allocated.
+ @Output        ppsBase - pointer to a handle base for the current process
  @Return        Error code or PVRSRV_OK
 ******************************************************************************/
-PVRSRV_ERROR PVRSRVAcquireProcessHandleBase(IMG_PID uiPid, PROCESS_HANDLE_BASE **ppsBase)
+PVRSRV_ERROR PVRSRVAcquireProcessHandleBase(PROCESS_HANDLE_BASE **ppsBase)
 {
 	PROCESS_HANDLE_BASE *psBase;
 	PVRSRV_ERROR eError;
+	uintptr_t uiHashKey;
 
 	OSLockAcquire(g_hProcessHandleBaseLock);
 
-	psBase = (PROCESS_HANDLE_BASE*) HASH_Retrieve(g_psProcessHandleBaseTable, uiPid);
+	/* Acquire the process resource hash key (and take ref) */
+	uiHashKey = OSAcquireCurrentPPIDResourceRefKM();
+	PVR_ASSERT(uiHashKey != 0);
+
+	psBase = (PROCESS_HANDLE_BASE*) HASH_Retrieve(g_psProcessHandleBaseTable, uiHashKey);
 
 	/* In case there is none we are going to allocate one */
 	if (psBase == NULL)
@@ -2198,7 +2206,8 @@ PVRSRV_ERROR PVRSRVAcquireProcessHandleBase(IMG_PID uiPid, PROCESS_HANDLE_BASE *
 		PVR_LOG_GOTO_IF_ERROR(eError, "PVRSRVAllocHandleBase", ErrorFreeProcessHandleBase);
 
 		/* Insert the handle base into the global hash table */
-		bSuccess = HASH_Insert(g_psProcessHandleBaseTable, uiPid, (uintptr_t) psBase);
+		psBase->uiHashKey = uiHashKey;
+		bSuccess = HASH_Insert(g_psProcessHandleBaseTable, uiHashKey, (uintptr_t)psBase);
 		PVR_LOG_GOTO_IF_FALSE(bSuccess, "HASH_Insert failed", ErrorFreeHandleBase);
 	}
 
@@ -2211,11 +2220,12 @@ PVRSRV_ERROR PVRSRVAcquireProcessHandleBase(IMG_PID uiPid, PROCESS_HANDLE_BASE *
 	return PVRSRV_OK;
 
 ErrorFreeHandleBase:
-    eError = PVRSRV_ERROR_INVALID_PARAMS;
+	eError = PVRSRV_ERROR_INVALID_PARAMS;
 	PVRSRVFreeHandleBase(psBase->psHandleBase, 0);
 ErrorFreeProcessHandleBase:
 	OSFreeMem(psBase);
 ErrorUnlock:
+	OSReleasePPIDResourceRefKM(uiHashKey);
 	OSLockRelease(g_hProcessHandleBaseLock);
 
 	return eError;
@@ -2225,22 +2235,21 @@ ErrorUnlock:
 *******************************************************************************
  @Function      PVRSRVReleaseProcessHandleBase
  @Description   Decrements reference count on a process handle base psBase
-                for a process identified by uiPid. If the reference count
-                reaches 0 the handle base will be freed..
+                for the current process. If the reference count reaches 0 the
+                process handle base will be freed.
  @Input         psBase - pointer to a process handle base
- @Inout         uiPid - PID of a process
  @Inout         ui64MaxBridgeTime - maximum time a handle destroy operation
                                     can hold the handle base lock (after that
                                     time a lock will be release and reacquired
                                     for another time slice)
  @Return        Error code or PVRSRV_OK
 ******************************************************************************/
-PVRSRV_ERROR PVRSRVReleaseProcessHandleBase(PROCESS_HANDLE_BASE *psBase, IMG_PID uiPid,
+PVRSRV_ERROR PVRSRVReleaseProcessHandleBase(PROCESS_HANDLE_BASE *psBase,
                                             IMG_UINT64 ui64MaxBridgeTime)
 {
 	PVRSRV_ERROR eError;
 	IMG_INT iRefCount;
-	uintptr_t uiHashValue;
+	uintptr_t uiHashValue = 0;
 
 	OSLockAcquire(g_hProcessHandleBaseLock);
 
@@ -2248,6 +2257,8 @@ PVRSRV_ERROR PVRSRVReleaseProcessHandleBase(PROCESS_HANDLE_BASE *psBase, IMG_PID
 
 	if (iRefCount != 0)
 	{
+		/* Release the process resource hash key (drop ref) */
+		OSReleasePPIDResourceRefKM(psBase->uiHashKey);
 		OSLockRelease(g_hProcessHandleBaseLock);
 		return PVRSRV_OK;
 	}
@@ -2255,7 +2266,10 @@ PVRSRV_ERROR PVRSRVReleaseProcessHandleBase(PROCESS_HANDLE_BASE *psBase, IMG_PID
 	/* in case the refcount becomes 0 we can remove the process handle base
 	 * and all related objects */
 
-	uiHashValue = HASH_Remove(g_psProcessHandleBaseTable, uiPid);
+	uiHashValue = HASH_Remove(g_psProcessHandleBaseTable, psBase->uiHashKey);
+	/* Release the process resource hash key (drop ref) */
+	OSReleasePPIDResourceRefKM(psBase->uiHashKey);
+	psBase->uiHashKey = 0;
 	OSLockRelease(g_hProcessHandleBaseLock);
 
 	PVR_LOG_RETURN_IF_FALSE(uiHashValue != 0, "HASH_Remove failed",

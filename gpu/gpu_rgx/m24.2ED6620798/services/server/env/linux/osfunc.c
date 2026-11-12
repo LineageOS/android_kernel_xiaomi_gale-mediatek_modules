@@ -71,6 +71,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <linux/interrupt.h>
 #include <linux/pfn_t.h>
 #include <linux/pfn.h>
+#include <linux/pid.h>
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0))
 #include <linux/sched/clock.h>
 #include <linux/sched/signal.h>
@@ -875,6 +876,22 @@ IMG_CHAR *OSGetCurrentClientProcessNameKM(void)
 	return OSGetCurrentProcessName();
 }
 
+uintptr_t OSAcquireCurrentPPIDResourceRefKM(void)
+{
+	struct pid *psPPIDResource = find_pid_ns(OSGetCurrentClientProcessIDKM(), &init_pid_ns);
+
+	PVR_ASSERT(psPPIDResource != NULL);
+	/* Take ref on pPid */
+	get_pid(psPPIDResource);
+	return (uintptr_t)psPPIDResource;
+}
+
+void OSReleasePPIDResourceRefKM(uintptr_t psPPIDResource)
+{
+	/* Drop ref on uiProc */
+	put_pid((struct pid*)psPPIDResource);
+}
+
 uintptr_t OSGetCurrentClientThreadIDKM(void)
 {
 	return OSGetCurrentThreadID();
@@ -1310,7 +1327,7 @@ OSMapPhysToLin(IMG_CPU_PHYADDR BasePAddr,
 
 	if (uiMappingFlags & ~(PVRSRV_MEMALLOCFLAG_CPU_CACHE_MODE_MASK))
 	{
-		PVR_ASSERT(!"Found non-cpu cache mode flag when mapping to the cpu");
+		PVR_DPF((PVR_DBG_ERROR, "Found non-cpu cache mode flag when mapping to the cpu"));
 		return NULL;
 	}
 
@@ -1356,11 +1373,11 @@ OSMapPhysToLin(IMG_CPU_PHYADDR BasePAddr,
 			break;
 		case PVRSRV_MEMALLOCFLAG_CPU_CACHE_COHERENT:
 		case PVRSRV_MEMALLOCFLAG_CPU_CACHE_INCOHERENT:
-			PVR_ASSERT(!"Unexpected cpu cache mode");
+			PVR_DPF((PVR_DBG_ERROR, "Unexpected cpu cache mode"));
 			pvLinAddr = NULL;
 			break;
 		default:
-			PVR_ASSERT(!"Unsupported cpu cache mode");
+			PVR_DPF((PVR_DBG_ERROR, "Unsupported cpu cache mode"));
 			pvLinAddr = NULL;
 			break;
 	}
@@ -1400,7 +1417,7 @@ typedef struct TIMER_CALLBACK_DATA_TAG
 	struct work_struct	sWork;
 }TIMER_CALLBACK_DATA;
 
-static struct workqueue_struct *psTimerWorkQueue;
+static struct workqueue_struct *psTimerWorkQueue = NULL;
 
 static TIMER_CALLBACK_DATA sTimers[OS_MAX_TIMERS];
 
@@ -2649,6 +2666,7 @@ OSAllocateSecBuf(PVRSRV_DEVICE_NODE *psDeviceNode,
 											 NULL,
 											 PVRSRV_MEMALLOCFLAG_GPU_READABLE
 											 | PVRSRV_MEMALLOCFLAG_GPU_WRITEABLE,
+											 OSGetCurrentClientProcessIDKM(),
 											 buf->size,
 											 1,
 											 1,
@@ -2675,6 +2693,8 @@ ErrorExit:
 IMG_INTERNAL void
 OSFreeSecBuf(PMR *psPMR)
 {
+	PVRSRV_ERROR eError;
+
 	struct dma_buf *buf = PhysmemGetDmaBuf(psPMR);
 	struct dma_heap *heap = PhysmemGetDmaHeap(psPMR);
 
@@ -2687,7 +2707,8 @@ OSFreeSecBuf(PMR *psPMR)
 		dma_heap_put(heap);
 	}
 
-	PMRUnrefPMR(psPMR);
+	eError = PMRUnrefPMR(psPMR);
+	PVR_ASSERT(eError == PVRSRV_OK);
 }
 #else /* PVR_ANDROID_HAS_DMA_HEAP_FIND */
 IMG_INTERNAL PVRSRV_ERROR
@@ -2726,7 +2747,7 @@ OSAllocateSecBuf(PVRSRV_DEVICE_NODE *psDeviceNode,
 
 #if defined(PVRSRV_ENABLE_GPU_MEMORY_INFO)
 ErrorUnrefPMR:
-	PMRUnrefPMR(*ppsPMR);
+	(void) PMRUnrefPMR(*ppsPMR);
 #endif
 ErrorExit:
 	return eError;
@@ -2735,7 +2756,8 @@ ErrorExit:
 IMG_INTERNAL void
 OSFreeSecBuf(PMR *psPMR)
 {
-	PMRUnrefPMR(psPMR);
+	PVRSRV_ERROR eError = PMRUnrefPMR(psPMR);
+	PVR_ASSERT(eError == PVRSRV_OK);
 }
 #endif
 #endif /* SUPPORT_SECURE_ALLOC_KM */
