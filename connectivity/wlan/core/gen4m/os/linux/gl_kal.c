@@ -12928,11 +12928,22 @@ end:
 static int wlan_pm_notifier_callback(struct notifier_block
 				     *self, unsigned long event, void *data)
 {
-	struct GLUE_INFO *prGlueInfo = (struct GLUE_INFO *)
-				       wlan_notifier_priv_data;
+	struct GLUE_INFO *prGlueInfo;
 
-	if (kalHaltTryLock())
-		return NOTIFY_STOP;
+	switch (event) {
+	case PM_SUSPEND_PREPARE:
+	case PM_HIBERNATION_PREPARE:
+		if (kalHaltTryLock())
+			return NOTIFY_BAD;
+		break;
+	case PM_POST_SUSPEND:
+	case PM_POST_HIBERNATION:
+		kalHaltLock(0);
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+	prGlueInfo = (struct GLUE_INFO *)wlan_notifier_priv_data;
 
 	if (kalIsHalted() || !prGlueInfo) {
 		goto out;
